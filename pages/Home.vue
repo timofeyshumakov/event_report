@@ -137,7 +137,7 @@
     </v-data-table>
     <v-data-table
       :headers="headersStatuses"
-      :items="groupedDataWithTotals"
+      :items="processedItems"
       :items-per-page="10"
       class="elevation-1"
     ></v-data-table>
@@ -157,12 +157,12 @@ const groupBy = [{ key: 'EVENT', order: 'asc' }];
 const sortBy = [{ key: 'UF_CRM_1750742107', order: 'asc' }];
 const groupByStatuses = [{ key: 'DATE_CREATE', order: 'desc' }];
 
-const headersStatuses = [
+const headersStatuses = ref([
   { title: 'Год', key: 'DATE_CREATE'},
   { title: 'Сумма', key: 'OPPORTUNITY'},
   { title: 'Статус участия', key: 'UF_CRM_1750742107'},
   { title: 'Количество компаний', key: 'count'},
-];
+]);
 
 function toggleSelectAll(){
   console.log(filters.value);
@@ -274,106 +274,6 @@ function mergedData(data) {
   });
 }
 
-const processedItems = computed(() => {
-  const result = [];
-  const eventsMap = {};
-  
-  // Группируем по мероприятиям
-  items.value.forEach(item => {
-    if (!eventsMap[item.EVENT]) {
-      eventsMap[item.EVENT] = {};
-    }
-    
-    if (!eventsMap[item.EVENT][item.DATE_CREATE]) {
-      eventsMap[item.EVENT][item.DATE_CREATE] = [];
-    }
-    
-    eventsMap[item.EVENT][item.DATE_CREATE].push(item);
-  });
-  
-  // Добавляем данные и итоги
-  Object.keys(eventsMap).forEach(eventName => {
-    const years = Object.keys(eventsMap[eventName]);
-    
-    years.forEach(year => {
-      // Добавляем записи за год
-      result.push(...eventsMap[eventName][year]);
-      
-      // Добавляем итог за год
-      const yearTotal = {
-        EVENT: eventName,
-        DATE_CREATE: year,
-        OPPORTUNITY: eventsMap[eventName][year].reduce((sum, item) => sum + Number(item.OPPORTUNITY), 0),
-        isYearTotal: true
-      };
-      result.push(yearTotal);
-    });
-    
-    // Добавляем итог за все годы
-    const allYearsTotal = {
-      EVENT: eventName,
-      DATE_CREATE: 'Все годы',
-      OPPORTUNITY: years.reduce((sum, year) => sum + eventsMap[eventName][year].reduce((s, item) => s + Number(item.OPPORTUNITY), 0), 0),
-      isTotal: true
-    };
-    result.push(allYearsTotal);
-  });
-  
-  return result;
-});
-
-const groupedDataWithTotals = computed(() => {
-  const grouped = {};
-  const yearTotals = {};
-  
-  items.value.forEach(item => {
-    const key = `${item.UF_CRM_1750742107}_${item.DATE_CREATE}`;
-    
-    if (!grouped[key]) {
-      grouped[key] = {
-        UF_CRM_1750742107: item.UF_CRM_1750742107,
-        DATE_CREATE: item.DATE_CREATE,
-        OPPORTUNITY: 0,
-        count: 0
-      };
-    }
-    
-    grouped[key].OPPORTUNITY += Number(item.OPPORTUNITY);
-    grouped[key].count += 1;
-    
-    // Считаем итоги по годам
-    if (!yearTotals[item.DATE_CREATE]) {
-      yearTotals[item.DATE_CREATE] = {
-        DATE_CREATE: item.DATE_CREATE,
-        OPPORTUNITY: 0,
-        count: 0
-      };
-    }
-    yearTotals[item.DATE_CREATE].OPPORTUNITY += Number(item.OPPORTUNITY);
-    yearTotals[item.DATE_CREATE].count += 1;
-  });
-  
-  const result = Object.values(grouped);
-  
-  // Добавляем итоги по годам
-  Object.values(yearTotals).forEach(year => {
-    result.push({
-      ...year,
-      isYearTotal: true
-    });
-  });
-  
-  // Добавляем общий итог
-  const totalAllYears = {
-    DATE_CREATE: 'Все годы',
-    OPPORTUNITY: Object.values(yearTotals).reduce((sum, year) => sum + year.OPPORTUNITY, 0),
-    count: Object.values(yearTotals).reduce((sum, year) => sum + year.count, 0),
-    isTotal: true
-  };
-  result.push(totalAllYears);
-  
-  return result;
-});
   // Создаем объект для итоговой строки
 const totalRow = ref({
   total: 0,
@@ -410,14 +310,15 @@ async function getFilters(){
     filters.value.value.years = await new Promise((resolve) => {
       BX24.callMethod("crm.deal.list", {
         order: {"ID": "ASC"},
-        select: ["DATE_CREATE"]
+        select: ["DATE_CREATE"],
+        filter: {"!UF_CRM_1750742743": "NULL", "!UF_CRM_1750742107": "NULL"},
       }, (res) => {
         if (res.data()) {
           const years = [];
           const currentYear = moment().year();
           const startYear = moment(res.data()[0].DATE_CREATE).format('YYYY');
           for (let year = startYear; year <= currentYear; year++) {
-            years.push(year);
+            years.push(+year);
           }
           resolve(years);
         }
@@ -429,16 +330,62 @@ async function getFilters(){
     filters.value.value.statuses = fields.UF_CRM_1750742107.items;
 }
 
+const processedItems = ref([]);
+
 onMounted(async () => {
   await getFilters();
   isLoading.value = false;
 });
+//, "COMPANY_ID": filters.value.selected.companies
+const getTable = (data, uniqueYears) => {
+  const result = [];
+  const statuses = data.map(item => item.UF_CRM_1750742107)
+  .filter((status, index, self) => self.indexOf(status) === index).map(str => ({ status: str }));
+  console.log(statuses);
 
-const getData = async() => {//, "COMPANY_ID": filters.value.selected.companies
-  let localItems = await callApi("crm.deal.list", {"!UF_CRM_1750742743": "NULL", "!UF_CRM_1750742107": "NULL", "DATE_CREATE": "2025%"}, ["OPPORTUNITY", "UF_CRM_1750742107", "UF_CRM_1750742743", "DATE_CREATE", "COMPANY_ID"], null, null, null);
+  data.forEach((item) => {
+    const foundObject = statuses.find(obj => obj.status === item.UF_CRM_1750742107);
+    const year = moment(item.DATE_CREATE).format('YYYY');
+        if(foundObject[year]){
+          foundObject[year] += parseInt(item.OPPORTUNITY);
+          foundObject[year + "_amount"]++;
+        }else{
+          foundObject[year] = parseInt(item.OPPORTUNITY);
+          foundObject[year + "_amount"] = 1;
+        }
+
+  });
+processedItems.value = statuses;
+headersStatuses.value = [
+{title: 'Status', key: 'status'},
+].concat(
+uniqueYears.map(year => ({
+  title: year,
+  key: year,
+  align: 'center',
+  children: [
+    {title: 'Статус участия', key: year + '_amount'},
+    {title: 'Сумма', key: year},
+  ]
+}))
+).concat({ title: 'Сумма', key: 'total', with: '25%'});
+
+console.log(headersStatuses.value );
+
+    console.log(statuses);
+}
+
+const getData = async() => {
+  let localItems = await callApi("crm.deal.list", {"!UF_CRM_1750742743": "NULL", "!UF_CRM_1750742107": "NULL"}, ["OPPORTUNITY", "UF_CRM_1750742107", "UF_CRM_1750742743", "DATE_CREATE", "COMPANY_ID"], null, null, null);
   const uniqueCompanies = Array.from(new Set(localItems.map(item => item.COMPANY_ID)));
-
   const companies = await callApi("crm.company.list", {"ID": [...uniqueCompanies]}, [], null, null, null);
+
+
+  localItems = localItems.filter(item => {
+    const year = +moment(item.DATE_CREATE).format('YYYY');
+    return filters.value.selected.years.includes(year);
+  });
+  const itemsToTable = localItems;
 
   localItems = localItems.map(item => ({
     ...item,
@@ -454,9 +401,8 @@ const uniqueYears = localItems
   localItems = mergedData(localItems);
 
   filters.value.value.years = uniqueYears;
-
   filters.value.value.companies = companies;
-  
+  getTable(itemsToTable, uniqueYears);
   console.log(filters.value);
 // Создаем массив объектов на основе уникальных годов
 const yearObjects = uniqueYears.map(year => ({
